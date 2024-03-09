@@ -1,0 +1,15 @@
+server:
+  log_level: debug
+logs:
+  positions_directory: "C:\\Program Files\\Grafana Agent"
+  configs:
+    - name: windowsApplication
+      clients:
+        - url: http://loki-loki-distributed-gateway.observability.svc.cluster.local/loki/api/v1/push
+      scrape_configs:
+      - job_name: devopsart-vm
+        static_configs:
+          - targets: [localhost]
+            labels:
+              job: devopsart-vm
+              __path__: "C:\\Program Files\\GrafanaLabs\\grafana\\data\\log\\grafana.log"

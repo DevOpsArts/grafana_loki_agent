@@ -1,0 +1,184 @@
+agent:
+  mounts:
+    varlog: true
+
+  mode: 'flow'
+  configMap:
+    create: true
+    content: |
+      prometheus.remote_write "default" {
+        endpoint {
+          url = ""
+        }
+      }
+
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // cadvisor
+      prometheus.scrape "cadvisor" {
+        scheme = "https"
+        tls_config {
+            server_name = "kubernetes"
+            ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+            insecure_skip_verify = false
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        targets = discovery.relabel.metrics_cadvisor.output
+        scrape_interval = "60s"
+        forward_to = [prometheus.remote_write.default.receiver]
+      }
+
+      discovery.relabel "metrics_cadvisor" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          action = "replace"
+          target_label = "__address__"
+          replacement = "kubernetes.default.svc.cluster.local:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex = "(.+)"
+          action = "replace"
+          replacement = "/api/v1/nodes/$${1}/proxy/metrics/cadvisor"
+          target_label = "__metrics_path__"
+        }
+      }
+
+      // kubelet
+      discovery.relabel "metrics_kubelet" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          action = "replace"
+          target_label = "__address__"
+          replacement = "kubernetes.default.svc.cluster.local:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex = "(.+)"
+          action = "replace"
+          replacement = "/api/v1/nodes/$${1}/proxy/metrics"
+          target_label = "__metrics_path__"
+        }
+      }
+
+      prometheus.scrape "kubelet" {
+        scheme = "https"
+        tls_config {
+            server_name = "kubernetes"
+            ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+            insecure_skip_verify = false
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        targets = discovery.relabel.metrics_kubelet.output
+        scrape_interval = "60s"
+        forward_to = [prometheus.remote_write.default.receiver]
+      }
+
+      // discovery rules
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.kubernetes "services" {
+        role = "service"
+      }
+
+      discovery.kubernetes "endpoints" {
+        role = "endpoints"
+      }
+
+      discovery.kubernetes "endpointslices" {
+        role = "endpointslice"
+      }
+
+      discovery.kubernetes "ingresses" {
+        role = "ingress"
+      }
+
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      // logging
+      discovery.relabel "logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          action = "keep"
+          regex = env("HOSTNAME")
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          action = "drop"
+          regex = "grafana-agent"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+          target_label  = "__path__"
+          separator     = "/"
+          replacement   = "/var/log/pods/*$1/*.log"
+        }
+      }
+
+      local.file_match "logs" {
+        path_targets = discovery.relabel.logs.output
+      }
+
+      loki.source.file "pods" {
+        targets    = local.file_match.logs.targets
+        forward_to = [loki.process.logs.receiver]
+      }
+
+      loki.process "logs" {
+        stage.cri {}
+        forward_to = [loki.write.local.receiver]
+      }
+
+      loki.source.kubernetes_events "events" {
+        log_format = "json"
+        forward_to = [loki.write.local.receiver]
+      }
+
+      loki.write "local" {
+        endpoint {
+          url = "http://loki-loki-distributed-gateway.observability.svc.cluster.local/loki/api/v1/push"
+        }
+      }
+ 
+      loki.source.azure_event_hubs "azure_aks" {
+      fully_qualified_namespace = "XXXXXXXXXX:9093"
+      event_hubs = ["aks"]
+      forward_to = [loki.write.local.receiver]
+      labels = {
+        "job" = "azure_aks",
+        }
+      authentication {
+        mechanism = "connection_string"
+        connection_string = "XXXXXXXXXXXXXXXXXXXXXX"
+      }
+      }
